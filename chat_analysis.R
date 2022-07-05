@@ -81,7 +81,7 @@ Heatmap_default = function(df, ...){
 
 chat <- rwa_read(CHAT_HISTORY_FILE) %>% 
   filter(!is.na(author)) %>% # remove messages without author
-  filter(text != PHRASE_CHANGED_SUBJECT) %>%
+  filter(!text %in% PHRASE_OTHER_WHATSAPP) %>%
   mutate(day = date(time),
          weekday = factor(wday(time, label=T), levels=WEEKDAY_ORDER),
          month = as.Date(paste0(year(day),"-",month(day),"-01")),
@@ -95,7 +95,7 @@ chat$text_without_emoji = sapply(1:nrow(chat), function(curr_row) {
 chat$words_in_text = sapply(chat$text_without_emoji, function(curr_text) {
   length(strsplit(curr_text, "\\s")[[1]])
 }, simplify = T, USE.NAMES = F)
-
+chat$emoji_in_text = sapply(chat$emoji, length, simplify = T, USE.NAMES = F)
 
 
 pdf(OUTPUT_FILE, width=8, height=5)
@@ -125,11 +125,16 @@ max_message_per_day = setNames(max_message_per_day_df$n,  max_message_per_day_df
 words_per_message_df = chat %>% group_by(author) %>% dplyr::summarize(mean_words_per_message = mean(words_in_text, na.rm=TRUE)) %>% as.data.frame()
 words_per_message = round(setNames(words_per_message_df$mean_words_per_message,  words_per_message_df$author),2)
 
+total_send_emoji_df = chat %>% group_by(author) %>% mutate("emoji_length" = sapply(emoji, length)) %>%
+  dplyr::summarize(emoji_sum = sum(emoji_length, na.rm=TRUE))  %>% as.data.frame()
+total_send_emoji = setNames(total_send_emoji_df$emoji_sum,  total_send_emoji_df$author)
+
+
 ### print tables in document
 plot_table_1 = data.frame("values"=c(as.character(conversation_start), as.character(conversation_end), conversation_duration_days,conversation_missing_days,total_authors),
-                          row.names = c("conversation start", "conversation_end", "duration days", "days without message","total authors") )
+                          row.names = c("conversation start", "conversation end", "duration days", "days without message","total authors") )
 
-plot_table_2 = data.frame(rbind(total_num_messages,total_deleted_messages,mean_messages_per_day,max_message_per_day,words_per_message, total_send_media), check.names = F)
+plot_table_2 = data.frame(rbind(total_num_messages,total_deleted_messages,mean_messages_per_day,max_message_per_day,words_per_message, total_send_media, total_send_emoji), check.names = F)
 rownames(plot_table_2) = gsub("_"," ", rownames(plot_table_2))
 
 plot_table_obj_1 = tableGrob(plot_table_1, theme = PLOT_TABLE_THEME, cols=NULL)
@@ -140,18 +145,20 @@ grid.arrange(plot_table_obj_1,plot_table_obj_2,
 
 
 ### large author number handling
-is_large_author_number = ifelse(total_authors>8, T, F)
+is_large_author_number = ifelse(total_authors>4, T, F)
 if(is_large_author_number) {  warning("can be problematic and take a long time for more than 12 group members ") }
 
 if(total_authors == 2) {
   PLOT_PAGE_ROWS = 1
   PLOT_PAGE_COLS = 2
 } else {
+  if(total_authors>2 & total_authors<=4) {
+    PLOT_PAGE_ROWS = 2
+    PLOT_PAGE_COLS = 2
+} else {
   PLOT_PAGE_ROWS = 3
   PLOT_PAGE_COLS = 2
-}
-
-
+} }
 
 
 ############################################
@@ -228,6 +235,25 @@ chat %>%
   ggtitle("messages per hour of day")
 
 
+chat %>% 
+  group_by(author, hour) %>% 
+  dplyr::summarize(mean_words_per_message = mean(words_in_text, na.rm=TRUE)) %>% 
+  ggplot(aes(x = hour, y = mean_words_per_message, fill=author, colour=author)) +
+  geom_bar(stat = "identity", position="dodge") +
+  ylab("mean # of words") + xlab("time [hour]") +
+  ggtitle("words per message over the day")
+
+
+chat %>% 
+  group_by(author, hour) %>% 
+  dplyr::summarize(mean_emoji_per_message = mean(emoji_in_text, na.rm=TRUE)) %>% 
+  ggplot(aes(x = hour, y = mean_emoji_per_message, fill=author, colour=author)) +
+  geom_bar(stat = "identity", position="dodge") +
+  ylab("mean # of emoji") + xlab("time [hour]") +
+  ggtitle("emoji per message over the day")
+
+
+
 heatmap_df_hour_weekday = chat %>%
   count(hour, weekday) %>% spread(hour, n) %>% as.data.frame()
 rownames(heatmap_df_hour_weekday) = heatmap_df_hour_weekday$weekday
@@ -297,13 +323,13 @@ chat_first_message %>%
 chat %>%
   group_by(author) %>%
   distinct(day, .keep_all= TRUE) %>%
-  mutate(hour_quarter = format(floor_date(time, "15 minutes"), format="2020-01-01 %H:%M:%S")  ) %>%
+  mutate(hour_quarter = format(floor_date(time, "30 minutes"), format="2020-01-01 %H:%M:%S")  ) %>%
   mutate(hour_quarter = as.POSIXct(hms::parse_hm(gsub("2020-01-01 ","", hour_quarter))) ) %>%
   count(hour_quarter)  %>%
   ggplot(aes(x = hour_quarter, y = n, colour=author)) +
   geom_line() +
   scale_x_datetime(date_labels = "%H:%M") +
-  ylab("# messages") + xlab("time [15min steps]") +
+  ylab("# messages") + xlab("time [30min steps]") +
   ggtitle("hour of first message of the day")
 
 
@@ -322,8 +348,8 @@ non_consecutive_entries = sapply(1:(nrow(chat)-1), function(curr_row_num) {
 chat_reply = chat[which(non_consecutive_entries),]
 chat_reply$time_diff = c(0,diff(chat_reply$time)/60) # min
 
-### keep only between 0 and 4 hours
-chat_reply = subset(chat_reply, time_diff >=0 & time_diff <=240)
+### keep only between 0 and 3 hours
+chat_reply = subset(chat_reply, time_diff >=0 & time_diff <=180)
 
 chat_reply %>%
   ggplot(aes(x = time_diff,colour=author)) +
@@ -334,8 +360,8 @@ chat_reply %>%
 
 ### create author specific heatmaps
 if(total_authors == 2) {
-  reply_bins = c(-1, 2, 5, 10, 30, 60, 120, 241)
-  reply_labels = c('0-2','2-5','5-10','10-30','30-60','60-120','120-240')
+  reply_bins = c(-1, 2, 5, 10, 30, 60, 120, 181)
+  reply_labels = c('0-2','2-5','5-10','10-30','30-60','60-120','120-180')
 
   heatmap_df_chat_reply = chat_reply %>% group_by(author) %>%
     mutate(time_bin = cut(time_diff, breaks=reply_bins, labels = reply_labels))  %>%
@@ -416,6 +442,13 @@ p_list_emoji = lapply(1:floor(total_authors/(PLOT_PAGE_ROWS*PLOT_PAGE_COLS)), fu
           axis.ticks.y = element_blank())
 })
 print(p_list_emoji)
+
+
+
+###TODO emoji percentage per messages over the day
+
+
+
 
 
 ############################################
@@ -506,7 +539,6 @@ if(total_authors==2) {
         chat_split_sentences_time = rep(chat_author$time, sapply(chat_split_sentences, length))
         chat_split_sentences = get_sentences(chat_author$text, as_vector = T)
         
-        ### TODO fix parallelization
         chat_author_sentiment = get_nrc_sentiment(chat_split_sentences, cl=cl, language =syuzhet_language_setting, lowercase = TRUE)
         # chat_author_sentiment = get_nrc_sentiment(chat_split_sentences, language =syuzhet_language_setting, lowercase = TRUE)
         chat_author_sentiment$neutral = chat_author_sentiment$negative ==0 & chat_author_sentiment$positive == 0
@@ -661,7 +693,7 @@ plot_wordcloud = function(chat_text) {
   dtm_df <- data.frame(word = names(dtm_words),freq=dtm_words)
 
   set.seed(123)
-  wordcloud(words = dtm_df$word, freq = dtm_df$freq, min.freq = 3,
+  wordcloud(words = dtm_df$word, freq = dtm_df$freq, min.freq = 5,
             max.words=100, random.order=FALSE, rot.per=0.35,
             colors=brewer.pal(8, "Dark2"), scale=c(4, .4), use.r.layout=F)
   
